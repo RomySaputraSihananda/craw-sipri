@@ -19,23 +19,27 @@ class Sipri:
         self.__datetime: Datetime = Datetime()
         self.__parser: Parser = Parser()
         self.__category: str = None
+        self.__timeout: int = 10
         self.__sub_categorys: dict = {}
 
         self.__request: Session = Session()
-        self.__request.timeout = 10
         self.__request.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0'})
 
     def __download_pdf(self, url: str, output: str) -> None:
         try:
-            response: Response = self.__request.get(url)
+            response: Response = self.__request.get(url, timeout=self.__timeout)
 
             if(response.status_code != 200): raise Exception(response)
 
-            logging.info(url)
-            output: str = f'{output}/{url.split("/")[-1][:250]}'
+            if(not os.path.exists(output)):
+                os.makedirs(output)
+            
+            output: str = f'{output}/{url.split("/")[-1].replace("/", "_")[:250]}'
 
             with open(output, 'wb') as file:
                 file.write(response.content)
+
+            logging.info(f'[pdf] {output}')
 
             return output
         except Exception as e:
@@ -43,7 +47,7 @@ class Sipri:
             return None
     
     def __get_urls_pdf_unoda(self, url: str):
-        response: Response = self.__request.get(url)
+        response: Response = self.__request.get(url, timeout=self.__timeout)
 
         pdfs = re.compile(r'(https?://[^"\']+\.pdf)')
 
@@ -53,19 +57,13 @@ class Sipri:
         self.__category = self.__parser.execute(html, '#main-menu-link-content1039af4d-1b27-4aa0-9b00-c3d6d1d69b93 a.sf-depth-1.menuparent').text()
         
         for a in self.__parser.execute(html, '#main-menu-link-content1039af4d-1b27-4aa0-9b00-c3d6d1d69b93 ul li a'):
-            # {
-            #     '/commentary/blog': 'WritePeace Blog', 
-            #     '/commentary/expert-comment': 'Expert Comments', 
-            #     '/commentary/essay': 'Essays', 
-            #     '/commentary/Topical-backgrounder': 'Backgrounders'
-            # }
-            # self.__sub_categorys = {'/commentary/essay': 'Essays'}
+            # self.__sub_categorys.update({'/commentary/essay': 'Essays'})
             self.__sub_categorys.update({PyQuery(a).attr('href'): PyQuery(a).text()})
     
     def __get_per_page(self, router: str, category: str) -> None:
         url: str = f'{self.__BASE_URL}{router}'
 
-        response: Response = self.__request.get(url)
+        response: Response = self.__request.get(url, timeout=self.__timeout)
         logging.info(f'[{router}] {response}')
 
         parser: PyQuery = self.__parser.execute(response.text, '.content.column')
@@ -85,14 +83,11 @@ class Sipri:
                 pdfs += self.__get_urls_pdf_unoda(unoda)
         
         if(pdfs):
-            if(not os.path.exists(f'{output}/pdf/{title.replace(" ", "_")[:250]}')):
-                    os.makedirs(f'{output}/pdf/{title.replace(" ", "_")[:250]}')
-
             with ThreadPoolExecutor() as executor:
                 try:
-                    futures = [executor.submit(self.__download_pdf, match, f'{output}/pdf/{title.replace(" ", "_")[:250]}') for match in set(pdfs)]
-
+                    futures = [executor.submit(self.__download_pdf, match, f'{output}/pdf/{title.replace(" ", "_").replace("/", "_")[:250]}') for match in set(pdfs)]
                     path_data_pdf = [future.result() for future in as_completed(futures) if future.result()]
+                    
                 except Exception as e:
                     logging.error(e)
                     traceback.print_exc()
@@ -100,24 +95,28 @@ class Sipri:
         if(not os.path.exists(output)):
             os.makedirs(output)
 
-        with open(f'{output}/{title.replace(" ", "_")[:250]}.json', 'w') as file:
-            file.write(dumps({
-                "link": url, 
-                "tag": [self.__BASE_URL.split('/')[-1], self.__category],
-                "domain": self.__BASE_URL.split('/')[-1],
-                "category": parser('#sipri-2016-breadcrumbs nav').text().replace('\n', ' '),
-                "title": title,
-                "created_date": parser('time').attr('datetime'),
-                "image_name": img.attr("src").split('/')[-1].split('?')[0],
-                "image_description": img.attr('title'),
-                "path_data_image": self.__BASE_URL + img.attr("src"),
-                "content": parser('.body.field--label-hidden').text().replace('\n', ''),
-                'crawling_time_epoch': int(time()),
-                "crawling_time": self.__datetime.now(),
-                "path_data_pdf": path_data_pdf 
-            }, indent=2, ensure_ascii=False))
+        try:
+            with open(f'{output}/{title.replace(" ", "_").replace("/", "_")[:250]}.json', 'w') as file:
+                file.write(dumps({
+                    "link": url, 
+                    "tag": [self.__BASE_URL.split('/')[-1], self.__category],
+                    "domain": self.__BASE_URL.split('/')[-1],
+                    "category": parser('#sipri-2016-breadcrumbs nav').text().replace('\n', ' '),
+                    "title": title,
+                    "created_date": parser('time').attr('datetime'),
+                    "image_name": img.attr("src").split('/')[-1].split('?')[0] if img.attr("src") else None,
+                    "image_description": img.attr('title') if img.attr('title') else None,
+                    "path_data_image": self.__BASE_URL + img.attr("src") if img.attr("src") else None,
+                    "content": parser('.body.field--label-hidden').text().replace('\n', ''),
+                    'crawling_time_epoch': int(time()),
+                    "crawling_time": self.__datetime.now(),
+                    "path_data_pdf": path_data_pdf 
+                }, indent=2, ensure_ascii=False))
+        except Exception as e:
+            logging.error(e)
+            traceback.print_exc()
 
-        logging.info('='*30)
+        logging.info(f'[json] {output}/{title.replace(" ", "_").replace("/", "_")[:250]}.json')
         
     def __get_urls_per_category(self, category: str):
         page: int = 0
@@ -125,12 +124,12 @@ class Sipri:
         data[self.__sub_categorys[category]]: list = [] 
         
         while(True):
-            response: Response = self.__request.get(f'{self.__BASE_URL}{category}?page={page}')
+            response: Response = self.__request.get(f'{self.__BASE_URL}{category}?page={page}', timeout=self.__timeout)
 
             contents: list = self.__parser.execute(response.text, 'div.views-row')
             
             if not contents:
-                logging.info(f'[{page}] [{category}] {response}{"="*10}')
+                logging.info(f'[{page}] [{category}] {response} finishh')
                 break
 
             for content in contents:
@@ -138,14 +137,14 @@ class Sipri:
 
             logging.info(f'[{page}] [{category}] {response}')
 
-            break
-            # page += 1
+            # break
+            page += 1
 
         return data
 
 
     def start(self):
-        response: Response = self.__request.get(self.__BASE_URL)
+        response: Response = self.__request.get(self.__BASE_URL, timeout=self.__timeout)
 
         self.__get_category(response.text)
 

@@ -1,5 +1,7 @@
-from sipri import Sipri
 from time import perf_counter
+
+from sipri import Sipri
+from sipri.helpers import logging
 
 if(__name__ == '__main__'):
     start = perf_counter()
@@ -8,5 +10,5 @@ if(__name__ == '__main__'):
 
     sipri.start()
 
-    print(perf_counter() - start)
+    logging.info(f'finist at {perf_counter() - start}')
 
