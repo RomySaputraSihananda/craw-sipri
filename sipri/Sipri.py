@@ -1,5 +1,6 @@
 import re
 import os
+import traceback
 
 from requests import Response
 from pyquery import PyQuery
@@ -21,23 +22,25 @@ class Sipri:
         self.__sub_categorys: dict = {}
 
         self.__request: Session = Session()
+        self.__request.timeout = 10
         self.__request.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/118.0'})
 
     def __download_pdf(self, url: str, output: str) -> None:
         try:
             response: Response = self.__request.get(url)
 
-            if(response.status_code != 200): raise Exception
+            if(response.status_code != 200): raise Exception(response)
 
             logging.info(url)
-            output: str = f'{output}/{url.split("/")[-1]}'
+            output: str = f'{output}/{url.split("/")[-1][:250]}'
 
             with open(output, 'wb') as file:
                 file.write(response.content)
 
             return output
-        except Exception:
-            return
+        except Exception as e:
+            logging.error(e)
+            return None
     
     def __get_urls_pdf_unoda(self, url: str):
         response: Response = self.__request.get(url)
@@ -50,6 +53,12 @@ class Sipri:
         self.__category = self.__parser.execute(html, '#main-menu-link-content1039af4d-1b27-4aa0-9b00-c3d6d1d69b93 a.sf-depth-1.menuparent').text()
         
         for a in self.__parser.execute(html, '#main-menu-link-content1039af4d-1b27-4aa0-9b00-c3d6d1d69b93 ul li a'):
+            # {
+            #     '/commentary/blog': 'WritePeace Blog', 
+            #     '/commentary/expert-comment': 'Expert Comments', 
+            #     '/commentary/essay': 'Essays', 
+            #     '/commentary/Topical-backgrounder': 'Backgrounders'
+            # }
             # self.__sub_categorys = {'/commentary/essay': 'Essays'}
             self.__sub_categorys.update({PyQuery(a).attr('href'): PyQuery(a).text()})
     
@@ -76,18 +85,22 @@ class Sipri:
                 pdfs += self.__get_urls_pdf_unoda(unoda)
         
         if(pdfs):
-            if(not os.path.exists(f'{output}/pdf/{title[:10]}')):
-                    os.makedirs(f'{output}/pdf/{title[:10]}')
+            if(not os.path.exists(f'{output}/pdf/{title.replace(" ", "_")[:250]}')):
+                    os.makedirs(f'{output}/pdf/{title.replace(" ", "_")[:250]}')
 
             with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(self.__download_pdf, match, f'{output}/pdf/{title[:10]}') for match in set(pdfs)]
+                try:
+                    futures = [executor.submit(self.__download_pdf, match, f'{output}/pdf/{title.replace(" ", "_")[:250]}') for match in set(pdfs)]
 
-                path_data_pdf = [future.result() for future in as_completed(futures) if future.result()]
+                    path_data_pdf = [future.result() for future in as_completed(futures) if future.result()]
+                except Exception as e:
+                    logging.error(e)
+                    traceback.print_exc()
 
         if(not os.path.exists(output)):
             os.makedirs(output)
 
-        with open(f'{output}/{title[:15]}.json', 'w') as file:
+        with open(f'{output}/{title.replace(" ", "_")[:250]}.json', 'w') as file:
             file.write(dumps({
                 "link": url, 
                 "tag": [self.__BASE_URL.split('/')[-1], self.__category],
@@ -125,8 +138,8 @@ class Sipri:
 
             logging.info(f'[{page}] [{category}] {response}')
 
-            # break
-            page += 1
+            break
+            # page += 1
 
         return data
 
@@ -139,13 +152,22 @@ class Sipri:
         logging.info(self.__sub_categorys)
 
         with ThreadPoolExecutor() as executor:
-            results = executor.map(self.__get_urls_per_category, self.__sub_categorys)
+            try:
+                results = executor.map(self.__get_urls_per_category, self.__sub_categorys)
 
-            for result in results:
-                [[category], [urls]] = [result.keys(), result.values()]
+                for result in results:
+                    try:
+                        [[category], [urls]] = [result.keys(), result.values()]
 
-                with ThreadPoolExecutor() as executor:
-                    executor.map(self.__get_per_page, urls, repeat(category))
+                        with ThreadPoolExecutor() as executor:
+                            executor.map(self.__get_per_page, urls, repeat(category))
+                    except Exception as e:
+                        logging.error(e)
+                        traceback.print_exc()
+
+            except Exception as e:
+                logging.error(e)
+                traceback.print_exc()
 
 # testing
 if(__name__ == '__main__'):
